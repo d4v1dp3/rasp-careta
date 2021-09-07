@@ -3,7 +3,8 @@
 # this code is currently for python 2.7
 from __future__ import print_function
 from time import sleep
-import smbus
+
+from smbus2 import SMBus
 
 # register addresses
 REG_INTR_STATUS_1 = 0x00
@@ -41,7 +42,7 @@ class MAX30102():
         #print("Channel: {0}, address: {1}".format(channel, address))
         self.address = address
         self.channel = channel
-        self.bus = smbus.SMBus(self.channel)
+        self.bus = SMBus(self.channel)
 
         self.reset()
 

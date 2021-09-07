@@ -1,23 +1,23 @@
-# -*-coding:utf-8
+# coding=utf-8
+# This is a sample Python script.
 
 import numpy as np
+import matplotlib.pyplot as plt
 
-# 25 samples per second (in algorithm.h)
-SAMPLE_FREQ = 25
-# taking moving average of 4 samples when calculating HR
-# in algorithm.h, "DONOT CHANGE" comment is attached
-MA_SIZE = 4
-# sampling frequency * 4 (in algorithm.h)
+SAMPLE_FREQ = 25.0
 BUFFER_SIZE = 100
 
+heart_rate_span = [10,250]
+smoothing_size = 4
+min_time_bw_samps = (60.0 / heart_rate_span[1])
 
-# this assumes ir_data and red_data as np.array
+xdata = np.arange(0.0, BUFFER_SIZE/SAMPLE_FREQ, 1/SAMPLE_FREQ)
+
 def calc_hr_and_spo2(ir_data, red_data):
     """
     By detecting  peaks of PPG cycle and corresponding AC/DC
     of red/infra-red signal, the an_ratio for the SPO2 is computed.
     """
-    smoothing_size = 6  # convolution smoothing size
 
     for i in range(len(ir_data)):
         if ir_data[i] < 90000.0:
@@ -27,13 +27,8 @@ def calc_hr_and_spo2(ir_data, red_data):
         if red_data[i] < 90000.0:
             red_data[i] = 0
 
-    red_data = np.convolve(red_data, np.ones((smoothing_size,)), 'same') / smoothing_size
-    red_data = np.append(np.repeat(red_data[int(smoothing_size / 2)], int(smoothing_size / 2)), red_data[int(smoothing_size / 2):-int(smoothing_size / 2)])
-    red_data = np.append(red_data, np.repeat(red_data[-int(smoothing_size / 2)], int(smoothing_size / 2)))
-
-    ir_data = np.convolve(ir_data, np.ones((smoothing_size,)), 'same') / smoothing_size
-    ir_data = np.append(np.repeat(ir_data[int(smoothing_size / 2)], int(smoothing_size / 2)), ir_data[int(smoothing_size / 2):-int(smoothing_size / 2)])
-    ir_data = np.append(ir_data, np.repeat(ir_data[-int(smoothing_size / 2)], int(smoothing_size / 2)))
+    hr_valid = False
+    hr = 0
 
     # get dc mean
     ir_mean = int(np.mean(ir_data))
@@ -42,10 +37,35 @@ def calc_hr_and_spo2(ir_data, red_data):
     # this lets peak detecter detect valley
     x = -1 * (np.array(ir_data) - ir_mean)
 
-    # 4 point moving average
-    # x is np.array with int values, so automatically casted to int
-    #for i in range(x.shape[0] - MA_SIZE):
-    #    x[i] = np.sum(x[i:i + MA_SIZE]) / MA_SIZE
+    x = np.convolve(x, np.ones((smoothing_size,)), 'same') / smoothing_size
+    ir_grad = np.gradient(x, xdata)
+    ir_grad[0:int(smoothing_size / 2) + 1] = np.zeros((int(smoothing_size / 2) + 1,))
+    ir_grad[-int(smoothing_size / 2) - 1:] = np.zeros((int(smoothing_size / 2) + 1,))
+
+    x = np.append(np.repeat(x[int(smoothing_size / 2)], int(smoothing_size / 2)),x[int(smoothing_size / 2):-int(smoothing_size / 2)])
+    x = np.append(x, np.repeat(x[-int(smoothing_size / 2)], int(smoothing_size / 2)))
+
+    peak_locs = np.where(ir_grad < -np.std(ir_grad))
+    if len(peak_locs[0]) > 0:
+        prev_pk = peak_locs[0][0]
+        true_peak_locs, pk_loc_span = [], []
+        for ii in peak_locs[0]:
+            y_pk = x[ii]
+            if (xdata[ii] - xdata[prev_pk]) < min_time_bw_samps:
+                pk_loc_span.append(ii)
+            else:
+                if pk_loc_span == []:
+                    true_peak_locs.append(ii)
+                else:
+                    true_peak_locs.append(int(np.mean(pk_loc_span)))
+                    pk_loc_span = []
+
+            prev_pk = int(ii)
+
+        t_peaks = [xdata[kk] for kk in true_peak_locs]
+        if len(t_peaks) > 1:
+            hr_valid = True
+            hr = round(60.0 / np.mean(np.diff(t_peaks)),2)
 
     # calculate threshold
     n_th = int(np.mean(x))
@@ -53,45 +73,28 @@ def calc_hr_and_spo2(ir_data, red_data):
     n_th = 60 if n_th > 60 else n_th  # max allowed
 
     ir_valley_locs, n_peaks = find_peaks(x, BUFFER_SIZE, n_th, 4, 15)
-    # print(ir_valley_locs[:n_peaks], ",", end="")
-    peak_interval_sum = 0
-    if n_peaks >= 2:
-        for i in range(1, n_peaks):
-            peak_interval_sum += (ir_valley_locs[i] - ir_valley_locs[i - 1])
-        peak_interval_sum = int(peak_interval_sum / (n_peaks - 1))
-        hr = int(SAMPLE_FREQ * 60 / peak_interval_sum)
-        hr_valid = True
-    else:
-        hr = 0  # unable to calculate because # of peaks are too small
-        hr_valid = False
 
     # ---------spo2---------
 
-    # find precise min near ir_valley_locs (???)
     exact_ir_valley_locs_count = n_peaks
-
-    # find ir-red DC and ir-red AC for SPO2 calibration ratio
-    # find AC/DC maximum of raw
 
     # FIXME: needed??
     for i in range(exact_ir_valley_locs_count):
         if ir_valley_locs[i] > BUFFER_SIZE:
-            spo2 = 0  # do not use SPO2 since valley loc is out of range
+            spo2 = 0
             spo2_valid = False
             return hr, hr_valid, spo2, spo2_valid
 
     i_ratio_count = 0
     ratio = []
 
-    # find max between two valley locations
-    # and use ratio between AC component of Ir and Red DC component of Ir and Red for SpO2
     red_dc_max_index = -1
     ir_dc_max_index = -1
-    for k in range(exact_ir_valley_locs_count - 1):
+    for k in range(exact_ir_valley_locs_count-1):
         red_dc_max = -16777216
         ir_dc_max = -16777216
-        if ir_valley_locs[k + 1] - ir_valley_locs[k] > 3:
-            for i in range(ir_valley_locs[k], ir_valley_locs[k + 1]):
+        if ir_valley_locs[k+1] - ir_valley_locs[k] > 3:
+            for i in range(ir_valley_locs[k], ir_valley_locs[k+1]):
                 if ir_data[i] > ir_dc_max:
                     ir_dc_max = ir_data[i]
                     ir_dc_max_index = i
@@ -99,20 +102,17 @@ def calc_hr_and_spo2(ir_data, red_data):
                     red_dc_max = red_data[i]
                     red_dc_max_index = i
 
-            red_ac = int((red_data[ir_valley_locs[k + 1]] - red_data[ir_valley_locs[k]]) * (red_dc_max_index - ir_valley_locs[k]))
-            red_ac = red_data[ir_valley_locs[k]] + int(red_ac / (ir_valley_locs[k + 1] - ir_valley_locs[k]))
+            red_ac = int((red_data[ir_valley_locs[k+1]] - red_data[ir_valley_locs[k]]) * (red_dc_max_index - ir_valley_locs[k]))
+            red_ac = red_data[ir_valley_locs[k]] + int(red_ac / (ir_valley_locs[k+1] - ir_valley_locs[k]))
             red_ac = red_data[red_dc_max_index] - red_ac  # subtract linear DC components from raw
 
-            ir_ac = int((ir_data[ir_valley_locs[k + 1]] - ir_data[ir_valley_locs[k]]) * (ir_dc_max_index - ir_valley_locs[k]))
-            ir_ac = ir_data[ir_valley_locs[k]] + int(ir_ac / (ir_valley_locs[k + 1] - ir_valley_locs[k]))
+            ir_ac = int((ir_data[ir_valley_locs[k+1]] - ir_data[ir_valley_locs[k]]) * (ir_dc_max_index - ir_valley_locs[k]))
+            ir_ac = ir_data[ir_valley_locs[k]] + int(ir_ac / (ir_valley_locs[k+1] - ir_valley_locs[k]))
             ir_ac = ir_data[ir_dc_max_index] - ir_ac  # subtract linear DC components from raw
 
-            nume = int(red_ac * ir_dc_max)
-            denom = int(ir_ac * red_dc_max)
-            if denom > 0 and i_ratio_count < 5 and nume != 0:
-                # original cpp implementation uses overflow intentionally.
-                # but at 64-bit OS, Pyhthon 3.X uses 64-bit int and nume*100/denom does not trigger overflow
-                # so using bit operation ( &0xffffffff ) is needed
+            nume = red_ac * ir_dc_max
+            denom = ir_ac * red_dc_max
+            if (denom > 0 and i_ratio_count < 5) and nume != 0:
                 ratio.append(int(((nume * 100) & 0xffffffff) / denom))
                 i_ratio_count += 1
 
@@ -122,19 +122,16 @@ def calc_hr_and_spo2(ir_data, red_data):
 
     ratio_ave = 0
     if mid_index > 1:
-        ratio_ave = int((ratio[mid_index - 1] + ratio[mid_index]) / 2)
+        ratio_ave = int((ratio[mid_index-1] + ratio[mid_index])/2)
     else:
         if len(ratio) != 0:
             ratio_ave = ratio[mid_index]
 
-    # why 184?
-    # print("ratio average: ", ratio_ave)
     if 2 < ratio_ave < 184:
-        # -45.060 * ratioAverage * ratioAverage / 10000 + 30.354 * ratioAverage / 100 + 94.845
-        spo2 = -45.060 * (ratio_ave ** 2) / 10000.0 + 30.054 * ratio_ave / 100.0 + 94.845
+        spo2 = round(-45.060 * (ratio_ave**2) / 10000.0 + 30.054 * ratio_ave / 100.0 + 94.845, 2)
         spo2_valid = True
     else:
-        spo2 = -999
+        spo2 = 0
         spo2_valid = False
 
     return hr, hr_valid, spo2, spo2_valid
@@ -146,6 +143,7 @@ def find_peaks(x, size, min_height, min_dist, max_num):
     """
     ir_valley_locs, n_peaks = find_peaks_above_min_height(x, size, min_height, max_num)
     ir_valley_locs, n_peaks = remove_close_peaks(n_peaks, ir_valley_locs, x, min_dist)
+
     n_peaks = min([n_peaks, max_num])
 
     return ir_valley_locs, n_peaks
@@ -156,17 +154,20 @@ def find_peaks_above_min_height(x, size, min_height, max_num):
     Find all peaks above MIN_HEIGHT
     """
 
-    i = 1
+    i = 0
     n_peaks = 0
     ir_valley_locs = []  # [0 for i in range(max_num)]
     while i < size - 1:
-        if x[i] > min_height and x[i] > x[i - 1]:  # find the left edge of potential peaks
+        if x[i] > min_height and x[i] > x[i-1]:  # find the left edge of potential peaks
             n_width = 1
-            while (i + n_width) < size - 1 and x[i] == x[i + n_width]:  # find flat peaks
+            # original condition i+n_width < size may cause IndexError
+            # so I changed the condition to i+n_width < size - 1
+            while i + n_width < size - 1 and x[i] == x[i+n_width]:  # find flat peaks
                 n_width += 1
-            if x[i] > x[i + n_width] and n_peaks < max_num:  # find the right edge of peaks
+            if x[i] > x[i+n_width] and n_peaks < max_num:  # find the right edge of peaks
+                # ir_valley_locs[n_peaks] = i
                 ir_valley_locs.append(i)
-                n_peaks += 1
+                n_peaks += 1  # original uses post increment
                 i += n_width + 1
             else:
                 i += n_width
@@ -197,7 +198,7 @@ def remove_close_peaks(n_peaks, ir_valley_locs, x, min_dist):
         # for j in (i + 1, old_n_peaks):
         j = i + 1
         while j < old_n_peaks:
-            n_dist = sorted_indices[j] - (-1 if i == -1 else sorted_indices[i])
+            n_dist = (sorted_indices[j] - sorted_indices[i]) if i != -1 else (sorted_indices[j] + 1)  # lag-zero peak of autocorr is at index -1
             if n_dist > min_dist or n_dist < -1 * min_dist:
                 sorted_indices[n_peaks] = sorted_indices[j]
                 n_peaks += 1  # original uses post increment

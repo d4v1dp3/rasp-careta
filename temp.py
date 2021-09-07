@@ -17,7 +17,7 @@ class TempMonitor(object):
         sensor = MLX90614()
 
         while not self._thread.stopped:
-            self.temp = sensor.readObjectTemperature()
+            self.temp = sensor.readObjectTemperature() + 5
             if self.print_result:
                 print("TEMP:{0}".format(self.temp))
             time.sleep(self.LOOP_TIME)

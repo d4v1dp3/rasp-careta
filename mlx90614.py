@@ -1,4 +1,4 @@
-import smbus
+from smbus2 import SMBus
 import time
 
 class MLX90614():
@@ -8,7 +8,7 @@ class MLX90614():
 
     def __init__(self, address = 0x5a, bus = 1):
         self.address = address
-        self.bus = smbus.SMBus(bus)
+        self.bus = SMBus(bus)
 
     def readValue(self, registerAddress):
         error = None
@@ -18,12 +18,14 @@ class MLX90614():
             except IOError as e:
                 error = e
                 time.sleep(0.1)
-        raise error
+                return 0
 
     def shutdown(self):
         self.bus.close()
 
     def valueToCelcius(self, value):
+        if value == 0:
+            return 0
         return -273.15 + (value * 0.02)
 
     def readObjectTemperature(self):
